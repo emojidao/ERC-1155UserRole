@@ -1,0 +1,7 @@
+{
+    "solidity.defaultCompiler": "localFile",
+    "cSpell.words": [
+        "Warena"
+    ],
+    "solidity-va.test.defaultUnittestTemplate": "hardhat"
+}
