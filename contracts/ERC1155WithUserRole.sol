@@ -67,11 +67,24 @@ contract ERC1155WithUserRole is ERC1155, IERC1155WithUserRole {
         emit UpdateUser(operator, owner, user, id, amount);
     }
 
-    function mint(
+    function _beforeTokenTransfer(
+        address operator,
+        address from,
         address to,
-        uint256 id,
-        uint256 amount
-    ) public {
-        _mint(to, id, amount, "");
+        uint256[] memory ids,
+        uint256[] memory amounts,
+        bytes memory data
+    ) internal virtual override {
+        for (uint256 i = 0; i < ids.length; i++) {
+            if (from != address(0)) {
+                uint256 id = ids[i];
+                uint256 fromBalance = balanceOf(from, id);
+                uint256 frozen = _frozen[id][from];
+                require(
+                    fromBalance - frozen >= amounts[i],
+                    "ERC1155: insufficient balance for transfer"
+                );
+            }
+        }
     }
 }

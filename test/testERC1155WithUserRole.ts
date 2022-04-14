@@ -1,26 +1,85 @@
 import { expect } from "chai";
 import { ethers } from "hardhat";
 
-describe("set_user", function () {
-    it("Should set user to bob", async function () {
-        /**alice is the Owner */
-        const [alice, bob] = await ethers.getSigners();
+describe("Test 1155 User Role", function () {
+    let alice, bob, carl;
+    let contract;
 
-        const ERC1155WithUserRole = await ethers.getContractFactory("ERC1155WithUserRole");
+    beforeEach(async function () {
+        [alice, bob, carl] = await ethers.getSigners();
 
-        const contract = await ERC1155WithUserRole.deploy();
+        const ERC1155WithUserRoleDemo = await ethers.getContractFactory("ERC1155WithUserRoleDemo");
 
-        await contract.mint(alice.address, 1,100);
-
-        await contract.setUser(alice.address,bob.address,1,50);
-
-        await contract.setUser(alice.address,bob.address,1,10);
-
-        expect(await contract.balanceOfUser(bob.address,1)).equals(10);
-
-        expect(await contract.balanceOfUserFromOwner(bob.address,alice.address,1)).equals(10);
-
-        expect(await contract.frozenOfOwner(alice.address,1)).equals(10);
-        
+        contract = await ERC1155WithUserRoleDemo.deploy();
     });
+
+    describe("", function () {
+        it("Should set user to bob", async function () {
+
+            await contract.mint(alice.address, 1, 100);
+
+            await contract.setUser(alice.address, bob.address, 1, 10);
+
+            expect(await contract.balanceOfUser(bob.address, 1)).equals(10);
+
+            expect(await contract.balanceOfUserFromOwner(bob.address, alice.address, 1)).equals(10);
+
+            expect(await contract.frozenOfOwner(alice.address, 1)).equals(10);
+
+            await contract.setUser(alice.address, bob.address, 1, 80);
+
+            expect(await contract.balanceOfUser(bob.address, 1)).equals(80);
+
+            expect(await contract.balanceOfUserFromOwner(bob.address, alice.address, 1)).equals(80);
+
+            expect(await contract.frozenOfOwner(alice.address, 1)).equals(80);
+
+            await contract.setUser(alice.address, bob.address, 1, 0);
+
+            expect(await contract.balanceOfUser(bob.address, 1)).equals(0);
+
+            expect(await contract.balanceOfUserFromOwner(bob.address, alice.address, 1)).equals(0);
+
+            expect(await contract.frozenOfOwner(alice.address, 1)).equals(0);
+
+        });
+
+        it("Should transfer success", async function () {
+
+            await contract.mint(alice.address, 1, 100);
+
+            await contract.setUser(alice.address, bob.address, 1, 10);
+
+            await contract.safeTransferFrom(alice.address, carl.address, 1, 90, "0x");
+
+            expect(await contract.balanceOfUser(bob.address, 1)).equals(10);
+
+            expect(await contract.balanceOfUserFromOwner(bob.address, alice.address, 1)).equals(10);
+
+            expect(await contract.frozenOfOwner(alice.address, 1)).equals(10);
+
+            expect(await contract.balanceOf(alice.address, 1)).equals(10);
+
+        });
+
+        it("Should burn success", async function () {
+
+            await contract.mint(alice.address, 1, 100);
+
+            await contract.setUser(alice.address, bob.address, 1, 10);
+
+            await contract.burn(alice.address, 1, 90);
+
+            expect(await contract.balanceOfUser(bob.address, 1)).equals(10);
+
+            expect(await contract.balanceOfUserFromOwner(bob.address, alice.address, 1)).equals(10);
+
+            expect(await contract.frozenOfOwner(alice.address, 1)).equals(10);
+
+            expect(await contract.balanceOf(alice.address, 1)).equals(10);
+        });
+
+    });
+
+
 });
