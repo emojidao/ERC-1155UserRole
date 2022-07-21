@@ -20,7 +20,7 @@ interface IERC1155WithUserRole is IERC1155 {
      *
      * - `user` cannot be the zero address.
      */
-    function balanceOfUser(address user, uint256 id)
+    function balanceOfUsable(address user, uint256 id)
         external
         view
         returns (uint256);
@@ -36,20 +36,6 @@ interface IERC1155WithUserRole is IERC1155 {
         external
         view
         returns (uint256);
-
-    /**
-     * @dev Returns the amount of tokens of token type `id` used by `user`.
-     *
-     * Requirements:
-     *
-     * - `user` cannot be the zero address.
-     * - `owner` cannot be the zero address.
-     */
-    function balanceOfUserFromOwner(
-        address user,
-        address owner,
-        uint256 id
-    ) external view returns (uint256);
 
     /// @notice set the user of a NFT
     /// @dev The zero address indicates there is no user

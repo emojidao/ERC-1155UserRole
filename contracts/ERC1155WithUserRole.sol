@@ -18,7 +18,7 @@ contract ERC1155WithUserRole is ERC1155, IERC1155WithUserRole {
 
     constructor() ERC1155("") {}
 
-    function balanceOfUser(address user, uint256 id)
+    function balanceOfUsable(address user, uint256 id)
         public
         view
         returns (uint256)
