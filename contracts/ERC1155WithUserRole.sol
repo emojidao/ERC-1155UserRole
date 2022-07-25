@@ -3,88 +3,274 @@
 pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/token/ERC1155/ERC1155.sol";
+import "@openzeppelin/contracts/token/ERC1155/utils/ERC1155Receiver.sol";
+import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import "./IERC1155WithUserRole.sol";
 
-contract ERC1155WithUserRole is ERC1155, IERC1155WithUserRole {
-    /**mapping(tokenId=>mapping(user=>amount)) */
-    mapping(uint256 => mapping(address => uint256)) private _userAllowances;
+contract ERC1155WithUserRole is ERC1155, ERC1155Receiver, IERC1155WithUserRole {
+    using EnumerableSet for EnumerableSet.UintSet;
 
-    /**mapping(tokenId=>mapping(owner=>amount)) */
-    mapping(uint256 => mapping(address => uint256)) private _frozen;
+    mapping(uint256 => mapping(address => uint256)) private _frozens;
 
-    /** mapping(tokenId=>mapping(owner=>mapping(user=>amount))) */
-    mapping(uint256 => mapping(address => mapping(address => uint256)))
-        private _allowances;
+    mapping(uint256 => Record) private _records;
 
-    constructor() ERC1155("") {}
+    mapping(uint256 => mapping(address => EnumerableSet.UintSet))
+        private _userRecordIds;
 
-    function balanceOfUsable(address user, uint256 id)
+    uint256 _curRecordId;
+    uint8 recordLimit = 10;
+
+    constructor(string memory uri_, uint8 recordLimit_) ERC1155(uri_) {
+        recordLimit = recordLimit_;
+    }
+
+    function isOwnerOrApproved(address owner, address operator)
         public
         view
-        returns (uint256)
+        returns (bool)
     {
-        return _userAllowances[id][user];
-    }
-
-    function balanceOfUserFromOwner(
-        address user,
-        address owner,
-        uint256 id
-    ) public view returns (uint256) {
-        return _allowances[id][owner][user];
-    }
-
-    function frozenOfOwner(address owner, uint256 id)
-        external
-        view
-        returns (uint256)
-    {
-        return _frozen[id][owner];
-    }
-
-    function setUser(
-        address owner,
-        address user,
-        uint256 id,
-        uint256 amount
-    ) public virtual {
-        require(user != address(0), "ERC1155: transfer to the zero address");
-        address operator = msg.sender;
-        uint256 fromBalance = balanceOf(owner, id);
-        _frozen[id][owner] -= _allowances[id][owner][user];
-        uint256 frozen = _frozen[id][owner];
         require(
-            fromBalance - frozen >= amount,
-            "ERC1155: insufficient balance for setUser"
+            owner == operator || isApprovedForAll(owner, operator),
+            "only owner or operator"
         );
-        unchecked {
-            _frozen[id][owner] = frozen + amount;
-        }
-        _userAllowances[id][user] -= _allowances[id][owner][user];
-        _userAllowances[id][user] += amount;
-        _allowances[id][owner][user] = amount;
-
-        emit UpdateUser(operator, owner, user, id, amount);
+        return true;
     }
 
-    function _beforeTokenTransfer(
-        address operator,
-        address from,
-        address to,
-        uint256[] memory ids,
-        uint256[] memory amounts,
-        bytes memory data
-    ) internal virtual override {
-        for (uint256 i = 0; i < ids.length; i++) {
-            if (from != address(0)) {
-                uint256 id = ids[i];
-                uint256 fromBalance = balanceOf(from, id);
-                uint256 frozen = _frozen[id][from];
-                require(
-                    fromBalance - frozen >= amounts[i],
-                    "ERC1155: insufficient balance for transfer"
-                );
+    function balanceOfUsable(address user, uint256 tokenId)
+        public
+        view
+        override
+        returns (uint256 amount)
+    {
+        uint256[] memory recordIds = _userRecordIds[tokenId][user].values();
+        for (uint256 i = 0; i < recordIds.length; i++) {
+            if (block.timestamp <= _records[recordIds[i]].expiry) {
+                amount += _records[recordIds[i]].amount;
             }
         }
+    }
+
+    function frozenOf(address owner, uint256 tokenId)
+        public
+        view
+        override
+        returns (uint256)
+    {
+        return _frozens[tokenId][owner];
+    }
+
+    function recordOf(uint256 recordId)
+        public
+        view
+        override
+        returns (Record memory)
+    {
+        return _records[recordId];
+    }
+
+    function setUsable(
+        address owner,
+        address user,
+        uint256 tokenId,
+        uint256 amount,
+        uint64 expiry
+    ) public override {
+        require(isOwnerOrApproved(owner, msg.sender));
+        require(amount <= balanceOf(owner, tokenId), "balance is not enough");
+        require(
+            _userRecordIds[tokenId][user].length() < recordLimit,
+            "user cannot have more records"
+        );
+        _frozen(owner, tokenId, amount);
+        _newRecord(owner, user, tokenId, amount, expiry);
+    }
+
+    function increaseUsable(
+        uint256 recordId,
+        uint256 amount,
+        uint64 expiry
+    ) public override {
+        Record storage _record = _records[recordId];
+        require(isOwnerOrApproved(_record.owner, msg.sender));
+        require(
+            amount <= balanceOf(_record.owner, _record.tokenId),
+            "balance is not enough"
+        );
+        _frozen(_record.owner, _record.tokenId, amount);
+        _record.amount += amount;
+        _record.expiry = expiry;
+        emit UpdateRecord(
+            recordId,
+            _record.tokenId,
+            _record.amount,
+            _record.owner,
+            _record.user,
+            _record.expiry
+        );
+    }
+
+    function decreaseUsable(
+        uint256 recordId,
+        uint256 amount,
+        uint64 expiry
+    ) public override {
+        Record storage _record = _records[recordId];
+
+        if (_record.expiry < block.timestamp) {
+            deleteRecord(recordId);
+        } else {
+            require(
+                isOwnerOrApproved(_record.owner, msg.sender) ||
+                    isOwnerOrApproved(_record.user, msg.sender)
+            );
+            require(amount <= _record.amount, "invalid amount");
+            if (amount == _record.amount) {
+                deleteRecord(recordId);
+            } else {
+                _decreaseUsable(recordId, amount, expiry);
+            }
+        }
+    }
+
+    function transferUsable(
+        uint256 recordId,
+        uint256 amount,
+        address to
+    ) public override {
+        Record storage _record = _records[recordId];
+        require(_record.expiry > block.timestamp);
+        require(isOwnerOrApproved(_record.owner, msg.sender));
+        require(amount <= _record.amount, "invalid amount");
+        if (amount == _record.amount) {
+            _frozens[_record.tokenId][_record.owner] -= amount;
+            _frozens[_record.tokenId][to] += amount;
+            _record.owner = to;
+            emit UpdateRecord(
+                recordId,
+                _record.tokenId,
+                _record.amount,
+                _record.owner,
+                _record.user,
+                _record.expiry
+            );
+        } else {
+            _frozens[_record.tokenId][_record.owner] -= amount;
+            _record.amount -= amount;
+            emit UpdateRecord(
+                recordId,
+                _record.tokenId,
+                amount,
+                _record.owner,
+                _record.user,
+                _record.expiry
+            );
+
+            _frozens[_record.tokenId][to] += amount;
+            _newRecord(
+                to,
+                _record.user,
+                _record.tokenId,
+                amount,
+                _record.expiry
+            );
+        }
+    }
+
+    function _newRecord(
+        address owner,
+        address user,
+        uint256 tokenId,
+        uint256 amount,
+        uint64 expiry
+    ) internal {
+        _curRecordId++;
+        _records[_curRecordId] = Record(tokenId, amount, owner, user, expiry);
+        _userRecordIds[tokenId][user].add(_curRecordId);
+        emit UpdateRecord(_curRecordId, tokenId, amount, owner, user, expiry);
+    }
+
+    function _decreaseUsable(
+        uint256 recordId,
+        uint256 amount,
+        uint64 expiry
+    ) internal {
+        Record storage _record = _records[recordId];
+        _unfrozen(_record.owner, _record.tokenId, amount);
+        _record.amount -= amount;
+        _record.expiry = expiry;
+        emit UpdateRecord(
+            recordId,
+            _record.tokenId,
+            _record.amount,
+            _record.owner,
+            _record.user,
+            _record.expiry
+        );
+    }
+
+    function deleteRecord(uint256 recordId) internal {
+        Record storage _record = _records[recordId];
+        _unfrozen(_record.owner, _record.tokenId, _record.amount);
+        _userRecordIds[_record.tokenId][_record.user].remove(recordId);
+        emit UpdateRecord(
+            recordId,
+            _record.tokenId,
+            0,
+            _record.owner,
+            _record.user,
+            _record.expiry
+        );
+        delete _records[recordId];
+    }
+
+    function _frozen(
+        address owner,
+        uint256 tokenId,
+        uint256 amount
+    ) internal virtual {
+        _safeTransferFrom(owner, address(this), tokenId, amount, "");
+        _frozens[tokenId][owner] += amount;
+    }
+
+    function _unfrozen(
+        address owner,
+        uint256 tokenId,
+        uint256 amount
+    ) internal virtual {
+        _safeTransferFrom(address(this), owner, tokenId, amount, "");
+        _frozens[tokenId][owner] -= amount;
+    }
+
+    function supportsInterface(bytes4 interfaceId)
+        public
+        view
+        override(IERC165, ERC1155, ERC1155Receiver)
+        returns (bool)
+    {
+        return
+            interfaceId == type(IERC1155).interfaceId ||
+            interfaceId == type(IERC1155MetadataURI).interfaceId ||
+            interfaceId == type(IERC1155Receiver).interfaceId ||
+            super.supportsInterface(interfaceId);
+    }
+
+    function onERC1155Received(
+        address operator,
+        address from,
+        uint256 id,
+        uint256 value,
+        bytes calldata data
+    ) external override returns (bytes4) {
+        return IERC1155Receiver.onERC1155Received.selector;
+    }
+
+    function onERC1155BatchReceived(
+        address operator,
+        address from,
+        uint256[] calldata ids,
+        uint256[] calldata values,
+        bytes calldata data
+    ) external override returns (bytes4) {
+        return IERC1155Receiver.onERC1155BatchReceived.selector;
     }
 }
